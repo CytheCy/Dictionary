@@ -10,7 +10,7 @@ from PySide6.QtCore import QSettings
 from PySide6.QtNetwork import QNetworkReply
 from PySide6.QtWidgets import QApplication
 
-from dictionary_app.api import DATAMUSE_ENDPOINT, WORDNET_ENDPOINT
+from dictionary_app.api import DATAMUSE_ENDPOINT, MOBY_ENDPOINT, WORDNET_ENDPOINT
 from dictionary_app.main import MainWindow
 
 
@@ -19,7 +19,7 @@ class SearchTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_one_search_starts_all_four_services(self):
+    def test_one_search_starts_all_five_services(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             dictionary_key = root / "dictionary.txt"
@@ -43,6 +43,7 @@ class SearchTests(unittest.TestCase):
                     ("calm", 1, "https://www.dictionaryapi.com/api/v3/references/thesaurus/json/", "thesaurus-secret"),
                     ("calm", 2, DATAMUSE_ENDPOINT, None),
                     ("calm", 3, WORDNET_ENDPOINT, None),
+                    ("calm", 4, MOBY_ENDPOINT, None),
                 ],
             )
             window.close()

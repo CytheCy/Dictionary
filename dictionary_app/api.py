@@ -3,6 +3,7 @@ from __future__ import annotations
 import html
 import re
 from dataclasses import dataclass, field
+from html.parser import HTMLParser
 from typing import Any, Iterable
 
 
@@ -10,6 +11,7 @@ DICTIONARY_ENDPOINT = "https://www.dictionaryapi.com/api/v3/references/collegiat
 THESAURUS_ENDPOINT = "https://www.dictionaryapi.com/api/v3/references/thesaurus/json/"
 DATAMUSE_ENDPOINT = "https://api.datamuse.com/words"
 WORDNET_ENDPOINT = "https://en-word.net/api/lemma/"
+MOBY_ENDPOINT = "https://dict.org/bin/Dict"
 
 
 @dataclass
@@ -224,6 +226,46 @@ def parse_datamuse_response(payload: Any) -> tuple[list[Entry], list[str]]:
         for label, senses in grouped.items()
     ]
     return entries, []
+
+
+class _MobyResultsParser(HTMLParser):
+    """Collect preformatted definition blocks from a DICT result page."""
+
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.in_pre = False
+        self.block_text: list[str] = []
+        self.blocks: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag == "pre":
+            self.in_pre = True
+            self.block_text = []
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "pre" and self.in_pre:
+            self.blocks.append("".join(self.block_text))
+            self.in_pre = False
+            self.block_text = []
+
+    def handle_data(self, data: str) -> None:
+        if self.in_pre:
+            self.block_text.append(data)
+
+
+def parse_moby_response(payload: Any, word: str) -> tuple[list[Entry], list[str]]:
+    """Map a dict.org Moby Thesaurus result page into the shared entry model."""
+    if not isinstance(payload, str):
+        raise ValueError("Moby Thesaurus returned an unexpected response.")
+    parser = _MobyResultsParser()
+    parser.feed(payload)
+    result_text = next((block for block in parser.blocks if "Moby Thesaurus words for" in block), "")
+    _, separator, word_text = result_text.partition(":")
+    synonyms = [] if not separator else _unique(word_text.split(","))
+    synonyms = [item for item in synonyms if item.casefold() != word.casefold()]
+    if not synonyms:
+        return [], []
+    return [Entry(headword=clean_markup(word), synonyms=synonyms)], []
 
 
 def parse_wordnet_response(payload: Any, word: str = "") -> tuple[list[Entry], list[str]]:

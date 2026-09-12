@@ -29,9 +29,11 @@ from PySide6.QtWidgets import (
 from .api import (
     DATAMUSE_ENDPOINT,
     DICTIONARY_ENDPOINT,
+    MOBY_ENDPOINT,
     THESAURUS_ENDPOINT,
     WORDNET_ENDPOINT,
     parse_datamuse_response,
+    parse_moby_response,
     parse_response,
     parse_wordnet_response,
 )
@@ -97,7 +99,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("WordDesk", "WordDesk")
         self.network = QNetworkAccessManager(self)
         self._pending: dict[QNetworkReply, tuple[str, int, int, str]] = {}
-        self._request_generation = [0, 0, 0, 0]
+        self._request_generation = [0, 0, 0, 0, 0]
         self._build_toolbar()
         self._build_content()
         self._build_statusbar()
@@ -146,14 +148,20 @@ class MainWindow(QMainWindow):
             "Ready for a word",
             "Search Open English WordNet for definitions, synonyms, antonyms, and examples. No API key is required.",
         )
+        self.moby_view = ResultsView(
+            "Ready for a word",
+            "Search the public-domain Moby Thesaurus for synonyms and related words. No API key is required.",
+        )
         self.dictionary_view.word_requested.connect(self.handle_word_request)
         self.thesaurus_view.word_requested.connect(self.handle_word_request)
         self.datamuse_view.word_requested.connect(self.handle_word_request)
         self.wordnet_view.word_requested.connect(self.handle_word_request)
+        self.moby_view.word_requested.connect(self.handle_word_request)
         self.tabs.addTab(self.dictionary_view, "Dictionary")
         self.tabs.addTab(self.thesaurus_view, "Thesaurus")
         self.tabs.addTab(self.datamuse_view, "Datamuse")
         self.tabs.addTab(self.wordnet_view, "WordNet")
+        self.tabs.addTab(self.moby_view, "Moby Thesaurus")
         self.stack.addWidget(self.tabs)
 
         settings_page = QWidget()
@@ -250,7 +258,7 @@ class MainWindow(QMainWindow):
         return self._views()[self.tabs.currentIndex()]
 
     def _views(self) -> tuple[ResultsView, ...]:
-        return (self.dictionary_view, self.thesaurus_view, self.datamuse_view, self.wordnet_view)
+        return (self.dictionary_view, self.thesaurus_view, self.datamuse_view, self.wordnet_view, self.moby_view)
 
     def search(self) -> None:
         word = self.search_input.text().strip()
@@ -265,6 +273,7 @@ class MainWindow(QMainWindow):
             (1, "Thesaurus", "keys/thesaurus_path", THESAURUS_ENDPOINT, self.thesaurus_view),
             (2, "Datamuse", None, DATAMUSE_ENDPOINT, self.datamuse_view),
             (3, "WordNet", None, WORDNET_ENDPOINT, self.wordnet_view),
+            (4, "Moby Thesaurus", None, MOBY_ENDPOINT, self.moby_view),
         )
         started = 0
         for tab, label, setting_name, endpoint, view in configurations:
@@ -276,7 +285,7 @@ class MainWindow(QMainWindow):
         if started:
             self.search_button.setEnabled(False)
             self.progress.show()
-            self.status_label.setText("Searching all sources…" if started == 4 else "Searching available sources…")
+            self.status_label.setText("Searching all sources…" if started == 5 else "Searching available sources…")
         else:
             self.status_label.setText("API key files needed")
 
@@ -299,6 +308,13 @@ class MainWindow(QMainWindow):
             query.addQueryItem("ipa", "1")
             query.addQueryItem("max", "1")
             url.setQuery(query)
+        elif endpoint == MOBY_ENDPOINT:
+            url = QUrl(endpoint)
+            query = QUrlQuery()
+            query.addQueryItem("Database", "moby-thesaurus")
+            query.addQueryItem("Form", "Dict2")
+            query.addQueryItem("Query", word)
+            url.setQuery(query)
         else:
             url = QUrl(endpoint + QUrl.toPercentEncoding(word).data().decode("ascii"))
         if key:
@@ -306,7 +322,7 @@ class MainWindow(QMainWindow):
             query.addQueryItem("key", key)
             url.setQuery(query)
         request = QNetworkRequest(url)
-        request.setRawHeader(b"Accept", b"application/json")
+        request.setRawHeader(b"Accept", b"text/html" if endpoint == MOBY_ENDPOINT else b"application/json")
         request.setHeader(QNetworkRequest.KnownHeaders.UserAgentHeader, "WordDesk/1.0")
         # The Open English WordNet host occasionally stalls or resets connections.
         # Fail over quickly instead of leaving its tab empty after a long wait.
@@ -319,6 +335,7 @@ class MainWindow(QMainWindow):
             "Merriam-Webster",
             "Datamuse",
             "WordNet",
+            "Moby Thesaurus",
         )[tab]
         view.show_loading(word, service)
 
@@ -354,7 +371,7 @@ class MainWindow(QMainWindow):
                 view.show_error("Request limit reached", "The service has declined more requests for now.")
                 self.status_label.setText("Request limit reached")
             else:
-                service = ("Merriam-Webster", "Merriam-Webster", "Datamuse", "WordNet")[tab]
+                service = ("Merriam-Webster", "Merriam-Webster", "Datamuse", "WordNet", "Moby Thesaurus")[tab]
                 view.show_error("Could not complete the lookup", f"{service} reported: {reply.errorString()}")
                 self.status_label.setText("Network error")
             reply.deleteLater()
@@ -362,21 +379,32 @@ class MainWindow(QMainWindow):
             return
 
         try:
-            payload = json.loads(bytes(reply.readAll()).decode("utf-8"))
-            if tab == 2 or (tab == 3 and endpoint == DATAMUSE_ENDPOINT):
+            response_text = bytes(reply.readAll()).decode("utf-8")
+            payload = response_text if endpoint == MOBY_ENDPOINT else json.loads(response_text)
+            if endpoint == MOBY_ENDPOINT:
+                entries, suggestions = parse_moby_response(payload, word)
+            elif tab == 2 or (tab == 3 and endpoint == DATAMUSE_ENDPOINT):
                 entries, suggestions = parse_datamuse_response(payload)
             elif tab == 3:
                 entries, suggestions = parse_wordnet_response(payload, word)
             else:
                 entries, suggestions = parse_response(payload)
             if entries:
-                view.show_entries(entries, thesaurus=(tab == 1))
-                self.status_label.setText(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} for “{word}”")
+                view.show_entries(
+                    entries,
+                    thesaurus=(tab in (1, 4)),
+                    word_limit=None if tab == 4 else 12,
+                    word_label="RELATED WORDS" if tab == 4 else "SYNONYMS",
+                )
+                if tab == 4:
+                    self.status_label.setText(f"{len(entries[0].synonyms)} related words for “{word}”")
+                else:
+                    self.status_label.setText(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} for “{word}”")
             elif suggestions:
                 view.show_suggestions(word, suggestions)
                 self.status_label.setText("No exact match")
             else:
-                service = ("Merriam-Webster", "Merriam-Webster", "Datamuse", "WordNet")[tab]
+                service = ("Merriam-Webster", "Merriam-Webster", "Datamuse", "WordNet", "Moby Thesaurus")[tab]
                 view.show_error("No results", f"{service} returned no entries for “{word}”.")
                 self.status_label.setText("No results")
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:

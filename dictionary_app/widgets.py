@@ -105,7 +105,7 @@ class ResultsView(QScrollArea):
             self._layout.addWidget(button)
         self._layout.addStretch()
 
-    def _word_row(self, label_text: str, words: list[str]) -> QWidget:
+    def _word_row(self, label_text: str, words: list[str], limit: int | None = 12) -> QWidget:
         block = QWidget()
         layout = QVBoxLayout(block)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -118,7 +118,8 @@ class ResultsView(QScrollArea):
         row.setVerticalSpacing(6)
         row.setContentsMargins(0, 0, 0, 0)
         columns = 4
-        for index, word in enumerate(words[:12]):
+        visible_words = words if limit is None else words[:limit]
+        for index, word in enumerate(visible_words):
             chip = WordButton(word)
             chip.clicked.connect(lambda _checked=False, value=word: self.word_requested.emit(value))
             row.addWidget(chip, index // columns, index % columns)
@@ -127,7 +128,13 @@ class ResultsView(QScrollArea):
         layout.addLayout(row)
         return block
 
-    def show_entries(self, entries: list[Entry], thesaurus: bool = False) -> None:
+    def show_entries(
+        self,
+        entries: list[Entry],
+        thesaurus: bool = False,
+        word_limit: int | None = 12,
+        word_label: str = "SYNONYMS",
+    ) -> None:
         self._clear()
         for entry_index, entry in enumerate(entries):
             card = QFrame()
@@ -178,9 +185,9 @@ class ResultsView(QScrollArea):
                         example.setWordWrap(True)
                         content_layout.addWidget(example)
                     if sense.synonyms:
-                        content_layout.addWidget(self._word_row("SYNONYMS", sense.synonyms))
+                        content_layout.addWidget(self._word_row("SYNONYMS", sense.synonyms, word_limit))
                     if sense.antonyms:
-                        content_layout.addWidget(self._word_row("ANTONYMS", sense.antonyms))
+                        content_layout.addWidget(self._word_row("ANTONYMS", sense.antonyms, word_limit))
                     sense_row.addWidget(content, 1)
                     card_layout.addLayout(sense_row)
             elif not (entry.synonyms or entry.antonyms):
@@ -189,9 +196,9 @@ class ResultsView(QScrollArea):
                 card_layout.addWidget(unavailable)
 
             if entry.synonyms:
-                card_layout.addWidget(self._word_row("SYNONYMS", entry.synonyms))
+                card_layout.addWidget(self._word_row(word_label, entry.synonyms, word_limit))
             if entry.antonyms:
-                card_layout.addWidget(self._word_row("ANTONYMS", entry.antonyms))
+                card_layout.addWidget(self._word_row("ANTONYMS", entry.antonyms, word_limit))
             if entry.etymology and not thesaurus:
                 et_label = QLabel("WORD HISTORY")
                 et_label.setProperty("class", "sectionLabel")

@@ -1,6 +1,6 @@
 import unittest
 
-from dictionary_app.api import clean_markup, parse_datamuse_response, parse_response, parse_wordnet_response
+from dictionary_app.api import clean_markup, parse_datamuse_response, parse_moby_response, parse_response, parse_wordnet_response
 
 
 class ParserTests(unittest.TestCase):
@@ -88,6 +88,21 @@ class ParserTests(unittest.TestCase):
         self.assertEqual(entries[0].senses[0].examples, ["a calm evening"])
         self.assertEqual(entries[0].senses[0].synonyms, ["tranquil"])
         self.assertEqual(entries[0].senses[0].antonyms, ["agitated"])
+
+    def test_moby_result_page(self):
+        payload = """
+            <pre>unrelated form content</pre>
+            <b>From Moby Thesaurus II by Grady Ward:</b>
+            <pre>
+              3 Moby Thesaurus words for "calm":
+                 peaceful, quiet,
+                 calm
+            </pre>
+        """
+        entries, suggestions = parse_moby_response(payload, "calm")
+        self.assertEqual(suggestions, [])
+        self.assertEqual(entries[0].headword, "calm")
+        self.assertEqual(entries[0].synonyms, ["peaceful", "quiet"])
 
 
 if __name__ == "__main__":
