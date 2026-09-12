@@ -9,6 +9,7 @@ from typing import Any, Iterable
 DICTIONARY_ENDPOINT = "https://www.dictionaryapi.com/api/v3/references/collegiate/json/"
 THESAURUS_ENDPOINT = "https://www.dictionaryapi.com/api/v3/references/thesaurus/json/"
 DATAMUSE_ENDPOINT = "https://api.datamuse.com/words"
+WORDNET_ENDPOINT = "https://en-word.net/api/lemma/"
 
 
 @dataclass
@@ -223,3 +224,86 @@ def parse_datamuse_response(payload: Any) -> tuple[list[Entry], list[str]]:
         for label, senses in grouped.items()
     ]
     return entries, []
+
+
+def parse_wordnet_response(payload: Any, word: str = "") -> tuple[list[Entry], list[str]]:
+    """Map Open English WordNet synsets into entries grouped by part of speech."""
+    if not isinstance(payload, list):
+        raise ValueError("WordNet returned an unexpected response.")
+
+    labels = {"n": "noun", "v": "verb", "a": "adjective", "s": "adjective", "r": "adverb"}
+    grouped: dict[str, Entry] = {}
+    searched = clean_markup(word).replace("_", " ")
+
+    for raw in payload:
+        if not isinstance(raw, dict):
+            continue
+        part = clean_markup(raw.get("partOfSpeech", ""))
+        label = labels.get(part, part)
+        members = raw.get("members", [])
+        if not isinstance(members, list):
+            members = []
+        lemmas = _unique(
+            str(member.get("lemma", "")).replace("_", " ")
+            for member in members
+            if isinstance(member, dict)
+        )
+        headword = searched or (lemmas[0] if lemmas else "Entry")
+        entry = grouped.setdefault(label, Entry(headword=headword, functional_label=label))
+
+        matching_member = next(
+            (
+                member
+                for member in members
+                if isinstance(member, dict)
+                and clean_markup(member.get("lemma", "")).replace("_", " ").casefold() == headword.casefold()
+            ),
+            None,
+        )
+        if not entry.pronunciation and matching_member:
+            pronunciations = matching_member.get("pronunciation", [])
+            if isinstance(pronunciations, list):
+                value = next(
+                    (
+                        clean_markup(item.get("value", ""))
+                        for item in pronunciations
+                        if isinstance(item, dict) and item.get("value")
+                    ),
+                    "",
+                )
+                if value:
+                    entry.pronunciation = f"/{value}/"
+
+        definitions = raw.get("definition", [])
+        if not isinstance(definitions, list):
+            definitions = []
+        examples = raw.get("example", [])
+        if not isinstance(examples, list):
+            examples = []
+        example_texts = [
+            clean_markup(example.get("text", "") if isinstance(example, dict) else example)
+            for example in examples
+        ]
+        synonyms = [lemma for lemma in lemmas if lemma.casefold() != headword.casefold()]
+        antonym_relations = raw.get("antonym", [])
+        if not isinstance(antonym_relations, list):
+            antonym_relations = []
+        antonyms = _unique(
+            str(relation.get("target_lemma", "")).replace("_", " ")
+            for relation in antonym_relations
+            if isinstance(relation, dict)
+        )
+        for definition in definitions:
+            definition_text = clean_markup(definition)
+            if definition_text:
+                entry.senses.append(
+                    Sense(
+                        number=str(len(entry.senses) + 1),
+                        definition=definition_text,
+                        examples=list(filter(None, example_texts)),
+                        synonyms=synonyms,
+                        antonyms=antonyms,
+                    )
+                )
+
+    return list(grouped.values()), []

@@ -30,8 +30,10 @@ from .api import (
     DATAMUSE_ENDPOINT,
     DICTIONARY_ENDPOINT,
     THESAURUS_ENDPOINT,
+    WORDNET_ENDPOINT,
     parse_datamuse_response,
     parse_response,
+    parse_wordnet_response,
 )
 from .style import STYLESHEET
 from .widgets import ResultsView
@@ -94,8 +96,8 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(700, 500)
         self.settings = QSettings("WordDesk", "WordDesk")
         self.network = QNetworkAccessManager(self)
-        self._pending: dict[QNetworkReply, tuple[str, int, int]] = {}
-        self._request_generation = [0, 0, 0]
+        self._pending: dict[QNetworkReply, tuple[str, int, int, str]] = {}
+        self._request_generation = [0, 0, 0, 0]
         self._build_toolbar()
         self._build_content()
         self._build_statusbar()
@@ -140,12 +142,18 @@ class MainWindow(QMainWindow):
             "Ready for a word",
             "Search definitions from Datamuse. No API key is required.",
         )
+        self.wordnet_view = ResultsView(
+            "Ready for a word",
+            "Search Open English WordNet for definitions, synonyms, antonyms, and examples. No API key is required.",
+        )
         self.dictionary_view.word_requested.connect(self.handle_word_request)
         self.thesaurus_view.word_requested.connect(self.handle_word_request)
         self.datamuse_view.word_requested.connect(self.handle_word_request)
+        self.wordnet_view.word_requested.connect(self.handle_word_request)
         self.tabs.addTab(self.dictionary_view, "Dictionary")
         self.tabs.addTab(self.thesaurus_view, "Thesaurus")
         self.tabs.addTab(self.datamuse_view, "Datamuse")
+        self.tabs.addTab(self.wordnet_view, "WordNet")
         self.stack.addWidget(self.tabs)
 
         settings_page = QWidget()
@@ -239,7 +247,10 @@ class MainWindow(QMainWindow):
         return key
 
     def _active_view(self) -> ResultsView:
-        return (self.dictionary_view, self.thesaurus_view, self.datamuse_view)[self.tabs.currentIndex()]
+        return self._views()[self.tabs.currentIndex()]
+
+    def _views(self) -> tuple[ResultsView, ...]:
+        return (self.dictionary_view, self.thesaurus_view, self.datamuse_view, self.wordnet_view)
 
     def search(self) -> None:
         word = self.search_input.text().strip()
@@ -253,6 +264,7 @@ class MainWindow(QMainWindow):
             (0, "Dictionary", "keys/dictionary_path", DICTIONARY_ENDPOINT, self.dictionary_view),
             (1, "Thesaurus", "keys/thesaurus_path", THESAURUS_ENDPOINT, self.thesaurus_view),
             (2, "Datamuse", None, DATAMUSE_ENDPOINT, self.datamuse_view),
+            (3, "WordNet", None, WORDNET_ENDPOINT, self.wordnet_view),
         )
         started = 0
         for tab, label, setting_name, endpoint, view in configurations:
@@ -264,7 +276,7 @@ class MainWindow(QMainWindow):
         if started:
             self.search_button.setEnabled(False)
             self.progress.show()
-            self.status_label.setText("Searching all sources…" if started == 3 else "Searching available sources…")
+            self.status_label.setText("Searching all sources…" if started == 4 else "Searching available sources…")
         else:
             self.status_label.setText("API key files needed")
 
@@ -296,11 +308,18 @@ class MainWindow(QMainWindow):
         request = QNetworkRequest(url)
         request.setRawHeader(b"Accept", b"application/json")
         request.setHeader(QNetworkRequest.KnownHeaders.UserAgentHeader, "WordDesk/1.0")
-        request.setTransferTimeout(15_000)
+        # The Open English WordNet host occasionally stalls or resets connections.
+        # Fail over quickly instead of leaving its tab empty after a long wait.
+        request.setTransferTimeout(8_000 if endpoint == WORDNET_ENDPOINT else 15_000)
         reply = self.network.get(request)
-        self._pending[reply] = (word, tab, generation)
+        self._pending[reply] = (word, tab, generation, endpoint)
         reply.finished.connect(lambda current=reply: self._request_finished(current))
-        service = "Datamuse" if tab == 2 else "Merriam-Webster"
+        service = "WordNet fallback" if tab == 3 and endpoint == DATAMUSE_ENDPOINT else (
+            "Merriam-Webster",
+            "Merriam-Webster",
+            "Datamuse",
+            "WordNet",
+        )[tab]
         view.show_loading(word, service)
 
     def _finish_activity_if_idle(self) -> None:
@@ -313,8 +332,8 @@ class MainWindow(QMainWindow):
         if context is None:
             reply.deleteLater()
             return
-        word, tab, generation = context
-        view = (self.dictionary_view, self.thesaurus_view, self.datamuse_view)[tab]
+        word, tab, generation, endpoint = context
+        view = self._views()[tab]
         is_latest = generation == self._request_generation[tab]
         if not is_latest:
             reply.deleteLater()
@@ -323,14 +342,19 @@ class MainWindow(QMainWindow):
 
         status_code = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
         if reply.error() != QNetworkReply.NetworkError.NoError:
-            if tab != 2 and status_code in (401, 403):
+            if tab == 3 and endpoint == WORDNET_ENDPOINT:
+                reply.deleteLater()
+                self.status_label.setText("WordNet is slow; trying its fallback…")
+                self._start_request(word, tab, DATAMUSE_ENDPOINT, None, view)
+                return
+            if tab in (0, 1) and status_code in (401, 403):
                 view.show_error("API key was rejected", "Check that the selected file contains the key for this API.", True)
                 self.status_label.setText("Authentication failed")
             elif status_code == 429:
                 view.show_error("Request limit reached", "The service has declined more requests for now.")
                 self.status_label.setText("Request limit reached")
             else:
-                service = "Datamuse" if tab == 2 else "The service"
+                service = ("Merriam-Webster", "Merriam-Webster", "Datamuse", "WordNet")[tab]
                 view.show_error("Could not complete the lookup", f"{service} reported: {reply.errorString()}")
                 self.status_label.setText("Network error")
             reply.deleteLater()
@@ -339,7 +363,12 @@ class MainWindow(QMainWindow):
 
         try:
             payload = json.loads(bytes(reply.readAll()).decode("utf-8"))
-            entries, suggestions = parse_datamuse_response(payload) if tab == 2 else parse_response(payload)
+            if tab == 2 or (tab == 3 and endpoint == DATAMUSE_ENDPOINT):
+                entries, suggestions = parse_datamuse_response(payload)
+            elif tab == 3:
+                entries, suggestions = parse_wordnet_response(payload, word)
+            else:
+                entries, suggestions = parse_response(payload)
             if entries:
                 view.show_entries(entries, thesaurus=(tab == 1))
                 self.status_label.setText(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} for “{word}”")
@@ -347,7 +376,7 @@ class MainWindow(QMainWindow):
                 view.show_suggestions(word, suggestions)
                 self.status_label.setText("No exact match")
             else:
-                service = "Datamuse" if tab == 2 else "Merriam-Webster"
+                service = ("Merriam-Webster", "Merriam-Webster", "Datamuse", "WordNet")[tab]
                 view.show_error("No results", f"{service} returned no entries for “{word}”.")
                 self.status_label.setText("No results")
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:

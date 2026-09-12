@@ -1,6 +1,6 @@
 import unittest
 
-from dictionary_app.api import clean_markup, parse_datamuse_response, parse_response
+from dictionary_app.api import clean_markup, parse_datamuse_response, parse_response, parse_wordnet_response
 
 
 class ParserTests(unittest.TestCase):
@@ -68,6 +68,26 @@ class ParserTests(unittest.TestCase):
         self.assertEqual([entry.functional_label for entry in entries], ["adjective", "noun"])
         self.assertEqual(entries[0].pronunciation, "/kɑm/")
         self.assertEqual(entries[0].senses[1].definition, "Free of noise and disturbance.")
+
+    def test_wordnet_entries_are_grouped_by_part_of_speech(self):
+        payload = [{
+            "partOfSpeech": "a",
+            "members": [
+                {"lemma": "calm", "pronunciation": [{"value": "kɑm"}]},
+                {"lemma": "tranquil"},
+            ],
+            "definition": ["not agitated"],
+            "example": ["a calm evening"],
+            "antonym": [{"target_lemma": "agitated"}],
+        }]
+        entries, suggestions = parse_wordnet_response(payload, "calm")
+        self.assertEqual(suggestions, [])
+        self.assertEqual(entries[0].functional_label, "adjective")
+        self.assertEqual(entries[0].pronunciation, "/kɑm/")
+        self.assertEqual(entries[0].senses[0].definition, "not agitated")
+        self.assertEqual(entries[0].senses[0].examples, ["a calm evening"])
+        self.assertEqual(entries[0].senses[0].synonyms, ["tranquil"])
+        self.assertEqual(entries[0].senses[0].antonyms, ["agitated"])
 
 
 if __name__ == "__main__":

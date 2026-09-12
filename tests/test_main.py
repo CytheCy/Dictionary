@@ -2,13 +2,15 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import MagicMock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QSettings
+from PySide6.QtNetwork import QNetworkReply
 from PySide6.QtWidgets import QApplication
 
-from dictionary_app.api import DATAMUSE_ENDPOINT
+from dictionary_app.api import DATAMUSE_ENDPOINT, WORDNET_ENDPOINT
 from dictionary_app.main import MainWindow
 
 
@@ -17,7 +19,7 @@ class SearchTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_one_search_starts_all_three_services(self):
+    def test_one_search_starts_all_four_services(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             dictionary_key = root / "dictionary.txt"
@@ -40,9 +42,26 @@ class SearchTests(unittest.TestCase):
                     ("calm", 0, "https://www.dictionaryapi.com/api/v3/references/collegiate/json/", "dictionary-secret"),
                     ("calm", 1, "https://www.dictionaryapi.com/api/v3/references/thesaurus/json/", "thesaurus-secret"),
                     ("calm", 2, DATAMUSE_ENDPOINT, None),
+                    ("calm", 3, WORDNET_ENDPOINT, None),
                 ],
             )
             window.close()
+
+    def test_wordnet_network_error_starts_fast_fallback(self):
+        window = MainWindow()
+        reply = MagicMock()
+        reply.attribute.return_value = None
+        reply.error.return_value = QNetworkReply.NetworkError.TimeoutError
+        window._pending[reply] = ("calm", 3, 0, WORDNET_ENDPOINT)
+        calls = []
+        window._start_request = lambda word, tab, endpoint, key, view: calls.append((word, tab, endpoint, key, view))
+
+        window._request_finished(reply)
+
+        self.assertEqual(calls[0][:4], ("calm", 3, DATAMUSE_ENDPOINT, None))
+        self.assertIs(calls[0][4], window.wordnet_view)
+        reply.deleteLater.assert_called_once()
+        window.close()
 
 
 if __name__ == "__main__":
