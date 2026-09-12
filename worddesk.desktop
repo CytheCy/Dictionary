@@ -1,0 +1,13 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=WordDesk
+GenericName=Dictionary and Thesaurus
+Comment=Search Merriam-Webster's dictionary and thesaurus
+Exec=/home/cport/Git/Dictionary/worddesk
+Icon=/home/cport/Git/Dictionary/assets/worddesk.svg
+Terminal=false
+Categories=Office;Dictionary;
+Keywords=dictionary;thesaurus;words;Merriam-Webster;
+StartupNotify=true
+StartupWMClass=WordDesk
