@@ -16,7 +16,7 @@ class SearchTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
-    def test_one_search_starts_both_services(self):
+    def test_one_search_starts_all_three_services(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             dictionary_key = root / "dictionary.txt"
@@ -33,7 +33,10 @@ class SearchTests(unittest.TestCase):
 
             window.search()
 
-            self.assertEqual(calls, [("calm", 0, "dictionary-secret"), ("calm", 1, "thesaurus-secret")])
+            self.assertEqual(
+                calls,
+                [("calm", 0, "dictionary-secret"), ("calm", 1, "thesaurus-secret"), ("calm", 2, None)],
+            )
             window.close()
 
 

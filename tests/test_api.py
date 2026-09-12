@@ -1,6 +1,6 @@
 import unittest
 
-from dictionary_app.api import clean_markup, parse_response
+from dictionary_app.api import clean_markup, parse_free_dictionary_response, parse_response
 
 
 class ParserTests(unittest.TestCase):
@@ -52,6 +52,35 @@ class ParserTests(unittest.TestCase):
         entries, _ = parse_response(payload)
         self.assertEqual(entries[0].synonyms, ["quiet", "still"])
         self.assertEqual(entries[0].senses[0].synonyms, ["peaceful"])
+
+    def test_free_dictionary_entry(self):
+        payload = [{
+            "word": "calm",
+            "phonetic": "/kɑːm/",
+            "meanings": [{
+                "partOfSpeech": "adjective",
+                "synonyms": ["peaceful"],
+                "antonyms": ["agitated"],
+                "definitions": [{
+                    "definition": "Not excited or upset.",
+                    "example": "She remained calm.",
+                    "synonyms": ["serene"],
+                    "antonyms": ["excited"],
+                }],
+            }],
+        }]
+        entries, suggestions = parse_free_dictionary_response(payload)
+        self.assertEqual(suggestions, [])
+        self.assertEqual(entries[0].headword, "calm")
+        self.assertEqual(entries[0].functional_label, "adjective")
+        self.assertEqual(entries[0].pronunciation, "/kɑːm/")
+        self.assertEqual(entries[0].senses[0].definition, "Not excited or upset.")
+        self.assertEqual(entries[0].senses[0].examples, ["She remained calm."])
+        self.assertEqual(entries[0].synonyms, ["peaceful"])
+
+    def test_free_dictionary_not_found(self):
+        entries, suggestions = parse_free_dictionary_response({"title": "No Definitions Found"})
+        self.assertEqual((entries, suggestions), ([], []))
 
 
 if __name__ == "__main__":

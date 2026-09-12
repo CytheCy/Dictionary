@@ -26,7 +26,13 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from .api import DICTIONARY_ENDPOINT, THESAURUS_ENDPOINT, parse_response
+from .api import (
+    DICTIONARY_ENDPOINT,
+    FREE_DICTIONARY_ENDPOINT,
+    THESAURUS_ENDPOINT,
+    parse_free_dictionary_response,
+    parse_response,
+)
 from .style import STYLESHEET
 from .widgets import ResultsView
 
@@ -89,7 +95,7 @@ class MainWindow(QMainWindow):
         self.settings = QSettings("WordDesk", "WordDesk")
         self.network = QNetworkAccessManager(self)
         self._pending: dict[QNetworkReply, tuple[str, int, int]] = {}
-        self._request_generation = [0, 0]
+        self._request_generation = [0, 0, 0]
         self._build_toolbar()
         self._build_content()
         self._build_statusbar()
@@ -130,10 +136,16 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.dictionary_view = ResultsView("Ready for a word", "Search the Collegiate Dictionary for definitions, examples, and word history.")
         self.thesaurus_view = ResultsView("Ready for a word", "Search the Collegiate Thesaurus for meanings, synonyms, and antonyms.")
+        self.free_dictionary_view = ResultsView(
+            "Ready for a word",
+            "Search the free, community-supported Dictionary API. No API key is required.",
+        )
         self.dictionary_view.word_requested.connect(self.handle_word_request)
         self.thesaurus_view.word_requested.connect(self.handle_word_request)
+        self.free_dictionary_view.word_requested.connect(self.handle_word_request)
         self.tabs.addTab(self.dictionary_view, "Dictionary")
         self.tabs.addTab(self.thesaurus_view, "Thesaurus")
+        self.tabs.addTab(self.free_dictionary_view, "Free Dictionary")
         self.stack.addWidget(self.tabs)
 
         settings_page = QWidget()
@@ -227,7 +239,7 @@ class MainWindow(QMainWindow):
         return key
 
     def _active_view(self) -> ResultsView:
-        return self.dictionary_view if self.tabs.currentIndex() == 0 else self.thesaurus_view
+        return (self.dictionary_view, self.thesaurus_view, self.free_dictionary_view)[self.tabs.currentIndex()]
 
     def search(self) -> None:
         word = self.search_input.text().strip()
@@ -240,27 +252,30 @@ class MainWindow(QMainWindow):
         configurations = (
             (0, "Dictionary", "keys/dictionary_path", DICTIONARY_ENDPOINT, self.dictionary_view),
             (1, "Thesaurus", "keys/thesaurus_path", THESAURUS_ENDPOINT, self.thesaurus_view),
+            (2, "Free Dictionary", None, FREE_DICTIONARY_ENDPOINT, self.free_dictionary_view),
         )
         started = 0
         for tab, label, setting_name, endpoint, view in configurations:
-            key = self._read_key(setting_name, label, view)
-            if key is not None:
-                self._start_request(word, tab, endpoint, key, view)
-                started += 1
+            key = self._read_key(setting_name, label, view) if setting_name else None
+            if setting_name and key is None:
+                continue
+            self._start_request(word, tab, endpoint, key, view)
+            started += 1
         if started:
             self.search_button.setEnabled(False)
             self.progress.show()
-            self.status_label.setText("Searching dictionary and thesaurus…" if started == 2 else "Searching…")
+            self.status_label.setText("Searching all sources…" if started == 3 else "Searching available sources…")
         else:
             self.status_label.setText("API key files needed")
 
-    def _start_request(self, word: str, tab: int, endpoint: str, key: str, view: ResultsView) -> None:
+    def _start_request(self, word: str, tab: int, endpoint: str, key: str | None, view: ResultsView) -> None:
         self._request_generation[tab] += 1
         generation = self._request_generation[tab]
         url = QUrl(endpoint + QUrl.toPercentEncoding(word).data().decode("ascii"))
-        query = QUrlQuery()
-        query.addQueryItem("key", key)
-        url.setQuery(query)
+        if key:
+            query = QUrlQuery()
+            query.addQueryItem("key", key)
+            url.setQuery(query)
         request = QNetworkRequest(url)
         request.setRawHeader(b"Accept", b"application/json")
         request.setHeader(QNetworkRequest.KnownHeaders.UserAgentHeader, "WordDesk/1.0")
@@ -276,7 +291,7 @@ class MainWindow(QMainWindow):
             reply.deleteLater()
             return
         word, tab, generation = context
-        view = self.dictionary_view if tab == 0 else self.thesaurus_view
+        view = (self.dictionary_view, self.thesaurus_view, self.free_dictionary_view)[tab]
         is_latest = generation == self._request_generation[tab]
         if not self._pending:
             self.search_button.setEnabled(True)
@@ -287,11 +302,14 @@ class MainWindow(QMainWindow):
 
         status_code = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
         if reply.error() != QNetworkReply.NetworkError.NoError:
-            if status_code in (401, 403):
+            if tab == 2 and status_code == 404:
+                view.show_error("No results", f"The Free Dictionary API has no entry for “{word}”.")
+                self.status_label.setText("No free dictionary result")
+            elif tab != 2 and status_code in (401, 403):
                 view.show_error("API key was rejected", "Check that the selected file contains the key for this API.", True)
                 self.status_label.setText("Authentication failed")
             elif status_code == 429:
-                view.show_error("Daily request limit reached", "Merriam-Webster has declined more requests for this API key today.")
+                view.show_error("Request limit reached", "The service has declined more requests for now.")
                 self.status_label.setText("Request limit reached")
             else:
                 view.show_error("Could not complete the lookup", reply.errorString())
@@ -301,7 +319,7 @@ class MainWindow(QMainWindow):
 
         try:
             payload = json.loads(bytes(reply.readAll()).decode("utf-8"))
-            entries, suggestions = parse_response(payload)
+            entries, suggestions = parse_free_dictionary_response(payload) if tab == 2 else parse_response(payload)
             if entries:
                 view.show_entries(entries, thesaurus=(tab == 1))
                 self.status_label.setText(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} for “{word}”")
@@ -309,7 +327,8 @@ class MainWindow(QMainWindow):
                 view.show_suggestions(word, suggestions)
                 self.status_label.setText("No exact match")
             else:
-                view.show_error("No results", f"Merriam-Webster returned no entries for “{word}”.")
+                service = "The Free Dictionary API" if tab == 2 else "Merriam-Webster"
+                view.show_error("No results", f"{service} returned no entries for “{word}”.")
                 self.status_label.setText("No results")
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
             view.show_error("Could not read the response", str(error))
