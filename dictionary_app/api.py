@@ -8,7 +8,7 @@ from typing import Any, Iterable
 
 DICTIONARY_ENDPOINT = "https://www.dictionaryapi.com/api/v3/references/collegiate/json/"
 THESAURUS_ENDPOINT = "https://www.dictionaryapi.com/api/v3/references/thesaurus/json/"
-FREE_DICTIONARY_ENDPOINT = "https://api.dictionaryapi.dev/api/v2/entries/en/"
+DATAMUSE_ENDPOINT = "https://api.datamuse.com/words"
 
 
 @dataclass
@@ -184,55 +184,42 @@ def parse_response(payload: Any) -> tuple[list[Entry], list[str]]:
     return entries, []
 
 
-def parse_free_dictionary_response(payload: Any) -> tuple[list[Entry], list[str]]:
-    """Map dictionaryapi.dev's response into WordDesk's shared entry model."""
-    if isinstance(payload, dict) and payload.get("title"):
-        return [], []
+def parse_datamuse_response(payload: Any) -> tuple[list[Entry], list[str]]:
+    """Map an exact Datamuse lookup into WordDesk's shared entry model."""
     if not isinstance(payload, list):
-        raise ValueError("The service returned an unexpected response.")
+        raise ValueError("Datamuse returned an unexpected response.")
+    if not payload or not isinstance(payload[0], dict):
+        return [], []
 
-    entries: list[Entry] = []
-    for raw in payload:
-        if not isinstance(raw, dict):
+    raw = payload[0]
+    headword = clean_markup(raw.get("word", "")) or "Entry"
+    tags = raw.get("tags", [])
+    if not isinstance(tags, list):
+        tags = []
+    pronunciation = next(
+        (clean_markup(tag.split(":", 1)[1]) for tag in tags if isinstance(tag, str) and tag.startswith("ipa_pron:")),
+        "",
+    )
+    if pronunciation:
+        pronunciation = f"/{pronunciation}/"
+
+    labels = {"n": "noun", "v": "verb", "adj": "adjective", "adv": "adverb", "u": "other"}
+    grouped: dict[str, list[Sense]] = {}
+    definitions = raw.get("defs", [])
+    if not isinstance(definitions, list):
+        definitions = []
+    for definition in definitions:
+        if not isinstance(definition, str):
             continue
-        headword = clean_markup(raw.get("word", "")) or "Entry"
-        pronunciation = clean_markup(raw.get("phonetic", ""))
-        if not pronunciation:
-            phonetics = raw.get("phonetics", [])
-            if isinstance(phonetics, list):
-                pronunciation = next(
-                    (clean_markup(item.get("text", "")) for item in phonetics if isinstance(item, dict) and item.get("text")),
-                    "",
-                )
-        origin = clean_markup(raw.get("origin", ""))
-        meanings = raw.get("meanings", [])
-        if not isinstance(meanings, list):
-            meanings = []
-        for meaning in meanings:
-            if not isinstance(meaning, dict):
-                continue
-            senses: list[Sense] = []
-            definitions = meaning.get("definitions", [])
-            if not isinstance(definitions, list):
-                definitions = []
-            for index, definition in enumerate(definitions, 1):
-                if not isinstance(definition, dict):
-                    continue
-                definition_text = clean_markup(definition.get("definition", ""))
-                example = clean_markup(definition.get("example", ""))
-                synonyms = _unique(definition.get("synonyms", [])) if isinstance(definition.get("synonyms"), list) else []
-                antonyms = _unique(definition.get("antonyms", [])) if isinstance(definition.get("antonyms"), list) else []
-                if definition_text or example or synonyms or antonyms:
-                    senses.append(Sense(str(index), definition_text, [example] if example else [], synonyms, antonyms))
-            entries.append(
-                Entry(
-                    headword=headword,
-                    functional_label=clean_markup(meaning.get("partOfSpeech", "")),
-                    pronunciation=pronunciation,
-                    senses=senses,
-                    synonyms=_unique(meaning.get("synonyms", [])) if isinstance(meaning.get("synonyms"), list) else [],
-                    antonyms=_unique(meaning.get("antonyms", [])) if isinstance(meaning.get("antonyms"), list) else [],
-                    etymology=origin,
-                )
-            )
+        part, separator, text = definition.partition("\t")
+        label = labels.get(part, part) if separator else ""
+        definition_text = clean_markup(text if separator else part)
+        if definition_text:
+            senses = grouped.setdefault(label, [])
+            senses.append(Sense(str(len(senses) + 1), definition_text))
+
+    entries = [
+        Entry(headword=headword, functional_label=label, pronunciation=pronunciation, senses=senses)
+        for label, senses in grouped.items()
+    ]
     return entries, []

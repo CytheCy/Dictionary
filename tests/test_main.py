@@ -8,6 +8,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QSettings
 from PySide6.QtWidgets import QApplication
 
+from dictionary_app.api import DATAMUSE_ENDPOINT
 from dictionary_app.main import MainWindow
 
 
@@ -28,14 +29,18 @@ class SearchTests(unittest.TestCase):
             window.settings.setValue("keys/dictionary_path", str(dictionary_key))
             window.settings.setValue("keys/thesaurus_path", str(thesaurus_key))
             calls = []
-            window._start_request = lambda word, tab, endpoint, key, view: calls.append((word, tab, key))
+            window._start_request = lambda word, tab, endpoint, key, view: calls.append((word, tab, endpoint, key))
             window.search_input.setText("calm")
 
             window.search()
 
             self.assertEqual(
                 calls,
-                [("calm", 0, "dictionary-secret"), ("calm", 1, "thesaurus-secret"), ("calm", 2, None)],
+                [
+                    ("calm", 0, "https://www.dictionaryapi.com/api/v3/references/collegiate/json/", "dictionary-secret"),
+                    ("calm", 1, "https://www.dictionaryapi.com/api/v3/references/thesaurus/json/", "thesaurus-secret"),
+                    ("calm", 2, DATAMUSE_ENDPOINT, None),
+                ],
             )
             window.close()
 

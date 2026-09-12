@@ -79,8 +79,8 @@ class ResultsView(QScrollArea):
     def show_empty(self) -> None:
         self._message(self.empty_title, self.empty_body)
 
-    def show_loading(self, word: str) -> None:
-        self._message(f"Looking up “{word}”", "Contacting Merriam-Webster…")
+    def show_loading(self, word: str, service: str = "Merriam-Webster") -> None:
+        self._message(f"Looking up “{word}”", f"Contacting {service}…")
 
     def show_error(self, title: str, detail: str, settings_action: bool = False) -> None:
         self._message(title, detail, "Open settings" if settings_action else "")

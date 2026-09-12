@@ -27,10 +27,10 @@ from PySide6.QtWidgets import (
 )
 
 from .api import (
+    DATAMUSE_ENDPOINT,
     DICTIONARY_ENDPOINT,
-    FREE_DICTIONARY_ENDPOINT,
     THESAURUS_ENDPOINT,
-    parse_free_dictionary_response,
+    parse_datamuse_response,
     parse_response,
 )
 from .style import STYLESHEET
@@ -136,16 +136,16 @@ class MainWindow(QMainWindow):
         self.tabs = QTabWidget()
         self.dictionary_view = ResultsView("Ready for a word", "Search the Collegiate Dictionary for definitions, examples, and word history.")
         self.thesaurus_view = ResultsView("Ready for a word", "Search the Collegiate Thesaurus for meanings, synonyms, and antonyms.")
-        self.free_dictionary_view = ResultsView(
+        self.datamuse_view = ResultsView(
             "Ready for a word",
-            "Search the free, community-supported Dictionary API. No API key is required.",
+            "Search definitions from Datamuse. No API key is required.",
         )
         self.dictionary_view.word_requested.connect(self.handle_word_request)
         self.thesaurus_view.word_requested.connect(self.handle_word_request)
-        self.free_dictionary_view.word_requested.connect(self.handle_word_request)
+        self.datamuse_view.word_requested.connect(self.handle_word_request)
         self.tabs.addTab(self.dictionary_view, "Dictionary")
         self.tabs.addTab(self.thesaurus_view, "Thesaurus")
-        self.tabs.addTab(self.free_dictionary_view, "Free Dictionary")
+        self.tabs.addTab(self.datamuse_view, "Datamuse")
         self.stack.addWidget(self.tabs)
 
         settings_page = QWidget()
@@ -239,7 +239,7 @@ class MainWindow(QMainWindow):
         return key
 
     def _active_view(self) -> ResultsView:
-        return (self.dictionary_view, self.thesaurus_view, self.free_dictionary_view)[self.tabs.currentIndex()]
+        return (self.dictionary_view, self.thesaurus_view, self.datamuse_view)[self.tabs.currentIndex()]
 
     def search(self) -> None:
         word = self.search_input.text().strip()
@@ -252,7 +252,7 @@ class MainWindow(QMainWindow):
         configurations = (
             (0, "Dictionary", "keys/dictionary_path", DICTIONARY_ENDPOINT, self.dictionary_view),
             (1, "Thesaurus", "keys/thesaurus_path", THESAURUS_ENDPOINT, self.thesaurus_view),
-            (2, "Free Dictionary", None, FREE_DICTIONARY_ENDPOINT, self.free_dictionary_view),
+            (2, "Datamuse", None, DATAMUSE_ENDPOINT, self.datamuse_view),
         )
         started = 0
         for tab, label, setting_name, endpoint, view in configurations:
@@ -268,10 +268,27 @@ class MainWindow(QMainWindow):
         else:
             self.status_label.setText("API key files needed")
 
-    def _start_request(self, word: str, tab: int, endpoint: str, key: str | None, view: ResultsView) -> None:
+    def _start_request(
+        self,
+        word: str,
+        tab: int,
+        endpoint: str,
+        key: str | None,
+        view: ResultsView,
+    ) -> None:
         self._request_generation[tab] += 1
         generation = self._request_generation[tab]
-        url = QUrl(endpoint + QUrl.toPercentEncoding(word).data().decode("ascii"))
+        if endpoint == DATAMUSE_ENDPOINT:
+            url = QUrl(endpoint)
+            query = QUrlQuery()
+            query.addQueryItem("sp", word)
+            query.addQueryItem("qe", "sp")
+            query.addQueryItem("md", "dpr")
+            query.addQueryItem("ipa", "1")
+            query.addQueryItem("max", "1")
+            url.setQuery(query)
+        else:
+            url = QUrl(endpoint + QUrl.toPercentEncoding(word).data().decode("ascii"))
         if key:
             query = QUrlQuery()
             query.addQueryItem("key", key)
@@ -283,7 +300,13 @@ class MainWindow(QMainWindow):
         reply = self.network.get(request)
         self._pending[reply] = (word, tab, generation)
         reply.finished.connect(lambda current=reply: self._request_finished(current))
-        view.show_loading(word)
+        service = "Datamuse" if tab == 2 else "Merriam-Webster"
+        view.show_loading(word, service)
+
+    def _finish_activity_if_idle(self) -> None:
+        if not self._pending:
+            self.search_button.setEnabled(True)
+            self.progress.hide()
 
     def _request_finished(self, reply: QNetworkReply) -> None:
         context = self._pending.pop(reply, None)
@@ -291,35 +314,32 @@ class MainWindow(QMainWindow):
             reply.deleteLater()
             return
         word, tab, generation = context
-        view = (self.dictionary_view, self.thesaurus_view, self.free_dictionary_view)[tab]
+        view = (self.dictionary_view, self.thesaurus_view, self.datamuse_view)[tab]
         is_latest = generation == self._request_generation[tab]
-        if not self._pending:
-            self.search_button.setEnabled(True)
-            self.progress.hide()
         if not is_latest:
             reply.deleteLater()
+            self._finish_activity_if_idle()
             return
 
         status_code = reply.attribute(QNetworkRequest.Attribute.HttpStatusCodeAttribute)
         if reply.error() != QNetworkReply.NetworkError.NoError:
-            if tab == 2 and status_code == 404:
-                view.show_error("No results", f"The Free Dictionary API has no entry for “{word}”.")
-                self.status_label.setText("No free dictionary result")
-            elif tab != 2 and status_code in (401, 403):
+            if tab != 2 and status_code in (401, 403):
                 view.show_error("API key was rejected", "Check that the selected file contains the key for this API.", True)
                 self.status_label.setText("Authentication failed")
             elif status_code == 429:
                 view.show_error("Request limit reached", "The service has declined more requests for now.")
                 self.status_label.setText("Request limit reached")
             else:
-                view.show_error("Could not complete the lookup", reply.errorString())
+                service = "Datamuse" if tab == 2 else "The service"
+                view.show_error("Could not complete the lookup", f"{service} reported: {reply.errorString()}")
                 self.status_label.setText("Network error")
             reply.deleteLater()
+            self._finish_activity_if_idle()
             return
 
         try:
             payload = json.loads(bytes(reply.readAll()).decode("utf-8"))
-            entries, suggestions = parse_free_dictionary_response(payload) if tab == 2 else parse_response(payload)
+            entries, suggestions = parse_datamuse_response(payload) if tab == 2 else parse_response(payload)
             if entries:
                 view.show_entries(entries, thesaurus=(tab == 1))
                 self.status_label.setText(f"{len(entries)} entr{'y' if len(entries) == 1 else 'ies'} for “{word}”")
@@ -327,7 +347,7 @@ class MainWindow(QMainWindow):
                 view.show_suggestions(word, suggestions)
                 self.status_label.setText("No exact match")
             else:
-                service = "The Free Dictionary API" if tab == 2 else "Merriam-Webster"
+                service = "Datamuse" if tab == 2 else "Merriam-Webster"
                 view.show_error("No results", f"{service} returned no entries for “{word}”.")
                 self.status_label.setText("No results")
         except (UnicodeDecodeError, json.JSONDecodeError, ValueError) as error:
@@ -335,6 +355,7 @@ class MainWindow(QMainWindow):
             self.status_label.setText("Invalid response")
         finally:
             reply.deleteLater()
+        self._finish_activity_if_idle()
 
 
 def run() -> int:
